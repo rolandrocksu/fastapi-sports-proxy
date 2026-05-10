@@ -1,0 +1,35 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8010:8010"
+    environment:
+      PROVIDER: openliga
+      RATE_LIMIT_RPS: 5
+      MAX_RETRIES: 3
+      BACKOFF_BASE_DELAY: "0.5"
+      BACKOFF_MAX_DELAY: "10.0"
+      LOG_BODY_MAX_CHARS: 200
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"   # 5433 on host to avoid clashing with local postgres
+    environment:
+      POSTGRES_USER: proxy
+      POSTGRES_PASSWORD: proxy
+      POSTGRES_DB: proxy_audit
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proxy -d proxy_audit"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  db_data:
