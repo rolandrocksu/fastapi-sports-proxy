@@ -1,5 +1,6 @@
 from app.decision_mapper.operation import Operation
 
+
 class ListLeaguesOperation(Operation):
     required_fields = ()
     provider_method = "list_leagues"

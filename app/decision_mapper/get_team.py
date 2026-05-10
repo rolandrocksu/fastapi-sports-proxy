@@ -1,5 +1,6 @@
 from app.decision_mapper.operation import Operation
 
+
 class GetTeamOperation(Operation):
     required_fields = ("teamId",)
     provider_method = "get_team"

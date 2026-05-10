@@ -1,5 +1,6 @@
 from app.decision_mapper.operation import Operation
 
+
 class GetMatchOperation(Operation):
     required_fields = ("matchId",)
     provider_method = "get_match"

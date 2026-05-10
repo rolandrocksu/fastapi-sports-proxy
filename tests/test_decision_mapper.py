@@ -15,7 +15,6 @@ import pytest
 from unittest.mock import AsyncMock
 
 from app.decision_mapper import (
-    DecisionMapper,
     GetLeagueMatchesOperation,
     GetMatchOperation,
     GetTeamOperation,

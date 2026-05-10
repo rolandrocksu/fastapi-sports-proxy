@@ -1,5 +1,6 @@
 from app.decision_mapper.operation import Operation
 
+
 class GetLeagueMatchesOperation(Operation):
     required_fields = ("leagueShortcut", "leagueSeason")
     provider_method = "get_league_matches"

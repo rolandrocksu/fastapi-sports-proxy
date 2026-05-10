@@ -17,8 +17,6 @@ Covers:
 
 import json
 import logging
-import pytest
-from unittest.mock import AsyncMock
 
 
 # ---------------------------------------------------------------------------

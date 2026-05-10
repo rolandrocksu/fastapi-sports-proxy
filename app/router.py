@@ -18,7 +18,10 @@ async def proxy_execute(request: Request, body: ProxyRequest):
         audit.error("UNKNOWN_OPERATION", f"'{body.operationType}' is not supported")
         return JSONResponse(
             status_code=400,
-            content={"error": "Unknown operationType", "detail": f"'{body.operationType}' is not a supported operation"},
+            content={
+                "error": "Unknown operationType",
+                "detail": f"'{body.operationType}' is not a supported operation"
+            },
         )
 
     missing = mapper.missing_fields(body.operationType, body.payload)
