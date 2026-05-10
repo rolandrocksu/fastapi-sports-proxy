@@ -28,9 +28,12 @@ _configure_logging()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if settings.provider == "openliga":
-        from app.providers.openliga import OpenLigaProvider
+        from app.providers.openliga import OpenLigaAdapter
+        from app.api_clients.openliga_client import OpenLigaClient
+        from app.rate_limiter import RateLimiter
 
-        app.state.provider = OpenLigaProvider()
+        client = OpenLigaClient(RateLimiter(rps=settings.rate_limit_rps))
+        app.state.provider = OpenLigaAdapter(client)
         app.state.provider_name = "openliga"
     else:
         raise RuntimeError(f"Unknown provider: {settings.provider}")
