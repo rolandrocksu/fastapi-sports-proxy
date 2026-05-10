@@ -31,10 +31,18 @@ class OpenLigaClient:
         return await self._get(f"/getmatchdata/{league_shortcut}/{league_season}")
 
     async def get_team_by(self, team_id: int | str) -> tuple[int, dict]:
-        return await self._get(f"/getteamby/{team_id}")
+        status, data = await self._get(f"/getmatchesbyteamid/{team_id}/100/100")
+        if not data or not isinstance(data, list):
+            return status, {}
+        for match in data:
+            if match.get("team1", {}).get("teamId") == int(team_id):
+                return status, match["team1"]
+            if match.get("team2", {}).get("teamId") == int(team_id):
+                return status, match["team2"]
+        return status, {}
 
     async def get_match_by_id(self, match_id: int | str) -> tuple[int, dict]:
-        return await self._get(f"/getmatchbyid/{match_id}")
+        return await self._get(f"/getmatchdata/{match_id}")
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -59,7 +67,11 @@ class OpenLigaClient:
                     if attempt < settings.max_retries:
                         continue
                     break  # exhausted retries on 5xx/429 → raise below
-                return resp.status_code, resp.json()
+                try:
+                    data = resp.json()
+                except ValueError:
+                    data = None
+                return resp.status_code, data
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_exc = exc
                 if attempt == settings.max_retries:

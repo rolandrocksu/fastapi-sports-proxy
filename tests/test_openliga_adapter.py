@@ -198,10 +198,10 @@ class TestOpenLigaClient:
         client._get.assert_called_with("/getmatchdata/bl1/2023")
 
         await client.get_team_by(40)
-        client._get.assert_called_with("/getteamby/40")
+        client._get.assert_called_with("/getmatchesbyteamid/40/100/100")
 
         await client.get_match_by_id(61588)
-        client._get.assert_called_with("/getmatchbyid/61588")
+        client._get.assert_called_with("/getmatchdata/61588")
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +250,7 @@ class TestOpenLigaAdapter:
         status, data, url = await adapter.get_team({"teamId": 40})
 
         client.get_team_by.assert_called_once_with(40)
-        assert url == f"{BASE_URL}/getteamby/40"
+        assert url == f"{BASE_URL}/getmatchesbyteamid/40/100/100"
 
     async def test_get_match_unpacks_match_id_from_payload(self):
         adapter, client = self._make_adapter()
@@ -259,7 +259,7 @@ class TestOpenLigaAdapter:
         status, data, url = await adapter.get_match({"matchId": 61588})
 
         client.get_match_by_id.assert_called_once_with(61588)
-        assert url == f"{BASE_URL}/getmatchbyid/61588"
+        assert url == f"{BASE_URL}/getmatchdata/61588"
 
     async def test_adapter_passes_through_status_and_data_unchanged(self):
         adapter, client = self._make_adapter()

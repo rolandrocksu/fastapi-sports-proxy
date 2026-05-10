@@ -1,28 +1,13 @@
-import logging
-import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from app.config import settings
+from app.lib.logging import configure_logging
 from app.middleware import RequestResponseMiddleware
 from app.router import router
 
-
-def _configure_logging() -> None:
-    """Route app loggers to stdout with a plain-message format (JSON lines)."""
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-
-    for name in ("app.audit", "app.middleware"):
-        lg = logging.getLogger(name)
-        if not lg.handlers:
-            lg.addHandler(handler)
-        lg.setLevel(logging.INFO)
-        lg.propagate = True  # allow pytest caplog to capture records
-
-
-_configure_logging()
+configure_logging()
 
 
 @asynccontextmanager

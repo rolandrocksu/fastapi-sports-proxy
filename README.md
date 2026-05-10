@@ -184,26 +184,28 @@ curl -s -X POST http://localhost:8010/proxy/execute \
 
 ## How the Decision Mapper Works
 
-`app/decision_mapper.py` holds a single `OPERATIONS` dict keyed by `operationType`:
+The `app/decision_mapper` package handles routing and normalization.
+
+Instead of a single large dictionary, it uses a class-based approach where each operation inherits from a base `Operation` class:
 
 ```python
-OPERATIONS = {
-    "ListLeagues": {
-        "required": [],                    # fields validated from payload
-        "method": "list_leagues",          # provider method to call
-        "normalizer": _normalize_leagues,  # transforms raw response
-    },
-    ...
-}
+class Operation(ABC):
+    required_fields: tuple[str, ...] = ()
+    provider_method: str
+
+    @abstractmethod
+    def normalize(self, raw: Any) -> Any: ...
 ```
 
-On each request the mapper:
-1. Checks `operationType` exists in `OPERATIONS` → 400 if not.
-2. Validates all `required` fields are present in `payload` → 400 with missing field list if not.
-3. Calls `getattr(provider, spec["method"])(payload)` to dispatch to the adapter.
-4. Runs `spec["normalizer"](raw_response)` to produce a stable output shape.
+Each specific operation (e.g., `GetMatchOperation` in `app/decision_mapper/get_match.py`) defines its required payload fields, the provider method to call, and how to normalize the response data.
 
-Adding a new operation = one dict entry + one normalizer function.
+On each request, the `DecisionMapper` (instantiated in `app/decision_mapper/__init__.py`):
+1. Checks `operationType` exists → 400 if not.
+2. Validates all `required_fields` are present in `payload` → 400 with missing field list if not.
+3. Calls `getattr(provider, op.provider_method)(payload)` to dispatch to the adapter.
+4. Runs `op.normalize(raw_response)` to produce a stable output shape.
+
+Adding a new operation = Create a new subclass of `Operation` and add it to the `DecisionMapper` dictionary in `app/decision_mapper/__init__.py`.
 
 ---
 
@@ -255,24 +257,34 @@ delay = min(BASE_DELAY * 2^attempt + uniform(0, 0.5), MAX_DELAY)
 
 ## Log Format
 
-All logs are JSON lines on stdout. Two log sources:
+Every log line uses a **unified structured format**:
 
-### Middleware logs (every request/response)
-```json
-{"event": "request", "requestId": "a1b2c3", "timestamp": "2026-05-10T12:00:00Z", "method": "POST", "path": "/proxy/execute", "headers": {"content-type": "application/json", "authorization": "***"}, "bodySizeBytes": 72, "bodyPreview": "{\"operationType\": \"GetTeam\", \"payload\": {\"teamId\": 40}}"}
-{"event": "response", "requestId": "a1b2c3", "timestamp": "2026-05-10T12:00:00Z", "statusCode": 200, "bodySizeBytes": 148, "latencyMs": 213.4}
+```
+[timestamp] [thread] [file:line] [level] [requestId=...]: {JSON payload}
 ```
 
-### Audit logs (per operation step)
-```json
-{"event": "validation", "requestId": "a1b2c3", "timestamp": "2026-05-10T12:00:00Z", "operationType": "GetTeam", "outcome": "pass"}
-{"event": "upstream_call", "requestId": "a1b2c3", "timestamp": "2026-05-10T12:00:00Z", "operationType": "GetTeam", "provider": "openliga", "targetUrl": "(resolving)"}
-{"event": "upstream_response", "requestId": "a1b2c3", "timestamp": "2026-05-10T12:00:00Z", "operationType": "GetTeam", "provider": "openliga", "targetUrl": "https://api.openligadb.de/getteamby/40", "upstreamStatus": 200, "latencyMs": 198.1}
-{"event": "outcome", "requestId": "a1b2c3", "timestamp": "2026-05-10T12:00:00Z", "operationType": "GetTeam", "result": "success", "totalLatencyMs": 201.3}
+Uvicorn's default access log is disabled — the middleware records richer request/response data in the same format.
+
+### requestId Correlation
+
+The middleware generates (or reuses) a `requestId` and shares it via a **ContextVar** so the router and audit logger use the exact same value. The ID appears in the `[requestId=...]` envelope of every log line and is also injected into every response as `X-Request-ID`.
+
+### Sample: full request lifecycle (GetTeam)
+
+```
+[2026-05-10T14:03:09.602Z] [MainThread] [middleware.py:62] [INFO] [requestId=demo-abc-123]: {"event": "request", "method": "POST", "path": "/proxy/execute", "headers": {"content-type": "application/json", "authorization": "***"}, "bodySizeBytes": 56, "bodyPreview": "{\"operationType\": \"GetTeam\", \"payload\": {\"teamId\": 40}}"}
+[2026-05-10T14:03:09.603Z] [MainThread] [audit.py:42] [INFO] [requestId=demo-abc-123]: {"event": "validation", "outcome": "pass", "operationType": "GetTeam"}
+[2026-05-10T14:03:09.603Z] [MainThread] [audit.py:42] [INFO] [requestId=demo-abc-123]: {"event": "upstream_call", "provider": "openliga", "targetUrl": "(resolving)", "operationType": "GetTeam"}
+[2026-05-10T14:03:10.469Z] [MainThread] [audit.py:42] [INFO] [requestId=demo-abc-123]: {"event": "upstream_response", "provider": "openliga", "targetUrl": "https://api.openligadb.de/getmatchesbyteamid/40/100/100", "upstreamStatus": 200, "latencyMs": 866.86, "operationType": "GetTeam"}
+[2026-05-10T14:03:10.469Z] [MainThread] [audit.py:42] [INFO] [requestId=demo-abc-123]: {"event": "outcome", "result": "success", "totalLatencyMs": 866.94, "operationType": "GetTeam"}
+[2026-05-10T14:03:10.470Z] [MainThread] [middleware.py:89] [INFO] [requestId=demo-abc-123]: {"event": "response", "statusCode": 200, "bodySizeBytes": 257, "bodyPreview": "{\"requestId\":\"demo-abc-123\",...}", "latencyMs": 868.01}
 ```
 
-### Error log sample (validation failure)
-```json
-{"event": "validation", "requestId": "a1b2c3", "timestamp": "2026-05-10T12:00:00Z", "operationType": "GetLeagueMatches", "outcome": "fail", "missingFields": ["leagueSeason"]}
-{"event": "outcome", "requestId": "a1b2c3", "timestamp": "2026-05-10T12:00:00Z", "operationType": "GetLeagueMatches", "result": "error", "errorCode": "VALIDATION_FAILED", "detail": "['leagueSeason']", "totalLatencyMs": 0.3}
+### Sample: validation failure
+
 ```
+[2026-05-10T14:03:09.602Z] [MainThread] [audit.py:42] [INFO] [requestId=a1b2c3]: {"event": "validation", "outcome": "fail", "missingFields": ["leagueSeason"], "operationType": "GetLeagueMatches"}
+[2026-05-10T14:03:09.602Z] [MainThread] [audit.py:42] [INFO] [requestId=a1b2c3]: {"event": "outcome", "result": "error", "errorCode": "VALIDATION_FAILED", "detail": "['leagueSeason']", "totalLatencyMs": 0.3, "operationType": "GetLeagueMatches"}
+```
+
+Body previews are truncated to `LOG_BODY_MAX_CHARS` (default: 200) for both request and response.

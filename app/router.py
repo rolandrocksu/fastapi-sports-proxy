@@ -5,13 +5,18 @@ from fastapi.responses import JSONResponse
 from app.models import ProxyRequest
 from app.decision_mapper import mapper
 from app.audit import AuditLogger
+from app.lib.context import request_id_var
 
 router = APIRouter()
 
 
 @router.post("/proxy/execute")
 async def proxy_execute(request: Request, body: ProxyRequest):
-    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    # Read requestId from the ContextVar set by middleware.
+    # Fall back to header / uuid only when middleware hasn't run (e.g. unit tests).
+    request_id = request_id_var.get() or request.headers.get(
+        "X-Request-ID"
+    ) or str(uuid.uuid4())
     audit = AuditLogger(request_id=request_id, operation_type=body.operationType)
 
     if not mapper.is_known(body.operationType):
@@ -52,5 +57,4 @@ async def proxy_execute(request: Request, body: ProxyRequest):
     return JSONResponse(
         status_code=200,
         content={"requestId": request_id, "operationType": body.operationType, "data": data},
-        headers={"X-Request-ID": request_id},
     )

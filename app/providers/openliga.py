@@ -27,12 +27,12 @@ class OpenLigaAdapter(SportsProvider):
     async def get_team(self, payload: dict) -> tuple[int, dict, str]:
         team_id = payload["teamId"]
         status, data = await self._client.get_team_by(team_id)
-        return status, data, f"{BASE_URL}/getteamby/{team_id}"
+        return status, data, f"{BASE_URL}/getmatchesbyteamid/{team_id}/100/100"
 
     async def get_match(self, payload: dict) -> tuple[int, dict, str]:
         match_id = payload["matchId"]
         status, data = await self._client.get_match_by_id(match_id)
-        return status, data, f"{BASE_URL}/getmatchbyid/{match_id}"
+        return status, data, f"{BASE_URL}/getmatchdata/{match_id}"
 
     async def close(self) -> None:
         await self._client.close()

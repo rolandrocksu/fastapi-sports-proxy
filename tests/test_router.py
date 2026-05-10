@@ -12,7 +12,9 @@ Covers:
 - Malformed JSON body → 422
 - Middleware: sensitive headers masked in logs
 - Middleware: body preview truncated at configured limit
-- Audit: JSON log lines emitted to stdout for success and error paths
+- Middleware: response body preview present and truncated
+- Middleware + audit requestId correlation (via LogRecord extra)
+- Audit: structured log lines emitted to stdout for success and error paths
 """
 
 import json
@@ -225,6 +227,15 @@ def _parse_caplog(caplog_records) -> list[dict]:
     return result
 
 
+def _get_request_ids(caplog_records) -> set[str]:
+    """Extract requestId values from the LogRecord extra attribute."""
+    return {
+        getattr(r, "request_id", None)
+        for r in caplog_records
+        if getattr(r, "request_id", None)
+    }
+
+
 # ---------------------------------------------------------------------------
 # Middleware: sensitive header masking
 # ---------------------------------------------------------------------------
@@ -275,11 +286,11 @@ class TestMiddlewareSensitiveHeaders:
 
 
 # ---------------------------------------------------------------------------
-# Middleware: body truncation
+# Middleware: body truncation (request + response)
 # ---------------------------------------------------------------------------
 
 class TestMiddlewareBodyTruncation:
-    def test_large_body_preview_is_truncated(self, client, caplog):
+    def test_large_request_body_preview_is_truncated(self, client, caplog):
         from app.config import settings
         c, mock = client
         mock.list_leagues.return_value = (200, [], "url")
@@ -295,6 +306,151 @@ class TestMiddlewareBodyTruncation:
         request_log = next((r for r in records if r.get("event") == "request"), None)
         assert request_log is not None
         assert len(request_log["bodyPreview"]) <= settings.log_body_max_chars
+
+    def test_large_response_body_preview_is_truncated(self, client, caplog):
+        """Response bodyPreview must also be truncated to log_body_max_chars."""
+        from app.config import settings
+        c, mock = client
+        # Return a large normalized payload so the JSON response body is big.
+        large_data = [{"leagueId": i, "leagueName": "A" * 100} for i in range(50)]
+        mock.list_leagues.return_value = (200, large_data, "url")
+
+        with caplog.at_level(logging.INFO, logger="app.middleware"):
+            c.post(
+                "/proxy/execute",
+                json={"operationType": "ListLeagues", "payload": {}},
+            )
+
+        records = _parse_caplog(caplog.records)
+        response_log = next((r for r in records if r.get("event") == "response"), None)
+        assert response_log is not None
+        assert "bodyPreview" in response_log
+        assert len(response_log["bodyPreview"]) <= settings.log_body_max_chars
+
+
+# ---------------------------------------------------------------------------
+# Middleware + Audit: requestId correlation
+# ---------------------------------------------------------------------------
+
+class TestRequestIdCorrelation:
+    def test_middleware_and_audit_share_same_request_id(self, client, caplog):
+        """
+        The middleware generates requestId and shares it via ContextVar.
+        The audit logger (called from the router) must use the same ID.
+        All LogRecords carry the same request_id in their extra attribute.
+        """
+        c, mock = client
+        mock.list_leagues.return_value = (200, [], "url")
+
+        with caplog.at_level(logging.INFO):
+            c.post(
+                "/proxy/execute",
+                json={"operationType": "ListLeagues", "payload": {}},
+                headers={"X-Request-ID": "correlated-id-789"},
+            )
+
+        ids = _get_request_ids(caplog.records)
+        assert ids == {"correlated-id-789"}, (
+            f"Expected all log records to share 'correlated-id-789', got {ids}"
+        )
+
+    def test_generated_request_id_is_shared_between_middleware_and_audit(self, client, caplog):
+        """When no X-Request-ID header is sent, the middleware generates one and
+        all downstream loggers (audit) must reuse it."""
+        c, mock = client
+        mock.list_leagues.return_value = (200, [], "url")
+
+        with caplog.at_level(logging.INFO):
+            c.post(
+                "/proxy/execute",
+                json={"operationType": "ListLeagues", "payload": {}},
+            )
+
+        ids = _get_request_ids(caplog.records)
+        assert len(ids) == 1, (
+            f"Expected exactly one shared requestId across middleware + audit, got {ids}"
+        )
+
+    def test_response_body_has_same_request_id_as_logs(self, client, caplog):
+        """The requestId in the JSON response body should match the log records."""
+        c, mock = client
+        mock.list_leagues.return_value = (200, [], "url")
+
+        with caplog.at_level(logging.INFO):
+            r = c.post(
+                "/proxy/execute",
+                json={"operationType": "ListLeagues", "payload": {}},
+            )
+
+        body_id = r.json()["requestId"]
+        log_ids = _get_request_ids(caplog.records)
+        assert body_id in log_ids
+
+
+# ---------------------------------------------------------------------------
+# Middleware: response log structure
+# ---------------------------------------------------------------------------
+
+class TestMiddlewareResponseLog:
+    def test_response_log_contains_required_fields(self, client, caplog):
+        c, mock = client
+        mock.list_leagues.return_value = (200, [], "url")
+
+        with caplog.at_level(logging.INFO, logger="app.middleware"):
+            c.post(
+                "/proxy/execute",
+                json={"operationType": "ListLeagues", "payload": {}},
+            )
+
+        records = _parse_caplog(caplog.records)
+        response_log = next((r for r in records if r.get("event") == "response"), None)
+        assert response_log is not None
+        # requestId and timestamp are in the log envelope, not in the JSON body
+        assert "statusCode" in response_log
+        assert "bodySizeBytes" in response_log
+        assert "bodyPreview" in response_log
+        assert "latencyMs" in response_log
+
+    def test_request_log_contains_required_fields(self, client, caplog):
+        c, mock = client
+        mock.list_leagues.return_value = (200, [], "url")
+
+        with caplog.at_level(logging.INFO, logger="app.middleware"):
+            c.post(
+                "/proxy/execute",
+                json={"operationType": "ListLeagues", "payload": {}},
+            )
+
+        records = _parse_caplog(caplog.records)
+        request_log = next((r for r in records if r.get("event") == "request"), None)
+        assert request_log is not None
+        # requestId and timestamp are in the log envelope, not in the JSON body
+        assert "method" in request_log
+        assert request_log["method"] == "POST"
+        assert "path" in request_log
+        assert request_log["path"] == "/proxy/execute"
+        assert "headers" in request_log
+        assert "bodySizeBytes" in request_log
+        assert "bodyPreview" in request_log
+
+    def test_request_id_carried_in_log_record_extra(self, client, caplog):
+        """requestId must be accessible via the LogRecord's extra attribute."""
+        c, mock = client
+        mock.list_leagues.return_value = (200, [], "url")
+
+        with caplog.at_level(logging.INFO, logger="app.middleware"):
+            c.post(
+                "/proxy/execute",
+                json={"operationType": "ListLeagues", "payload": {}},
+                headers={"X-Request-ID": "envelope-check"},
+            )
+
+        middleware_records = [
+            r for r in caplog.records if r.name == "app.middleware"
+        ]
+        assert middleware_records
+        for rec in middleware_records:
+            assert getattr(rec, "request_id", None) == "envelope-check"
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +508,8 @@ class TestAuditLogs:
         assert outcome["result"] == "error"
         assert outcome["errorCode"] == "UPSTREAM_FAILED"
 
-    def test_all_audit_logs_contain_request_id_and_timestamp(self, client, caplog):
+    def test_all_audit_logs_carry_request_id_in_extra(self, client, caplog):
+        """requestId is carried in the LogRecord extra, not in the JSON body."""
         c, mock = client
         mock.list_leagues.return_value = (200, [], "url")
 
@@ -363,12 +520,10 @@ class TestAuditLogs:
                 headers={"X-Request-ID": "trace-abc"},
             )
 
-        records = _parse_caplog(caplog.records)
-        audit_logs = [r for r in records if r.get("operationType") == "ListLeagues"]
-        assert audit_logs, "Expected at least one audit record for ListLeagues"
-        for log in audit_logs:
-            assert "requestId" in log
-            assert "timestamp" in log
+        audit_records = [r for r in caplog.records if r.name == "app.audit"]
+        assert audit_records, "Expected at least one audit record"
+        for rec in audit_records:
+            assert getattr(rec, "request_id", None) == "trace-abc"
 
     def test_upstream_response_log_contains_latency_and_status(self, client, caplog):
         c, mock = client
@@ -387,3 +542,31 @@ class TestAuditLogs:
         assert resp_log["upstreamStatus"] == 200
         assert "latencyMs" in resp_log
         assert resp_log["targetUrl"] == "https://api.openligadb.de/getteamby/1"
+
+    def test_outcome_success_contains_total_latency(self, client, caplog):
+        """Outcome log for successful requests must include totalLatencyMs."""
+        c, mock = client
+        mock.list_leagues.return_value = (200, [], "url")
+
+        with caplog.at_level(logging.INFO, logger="app.audit"):
+            c.post("/proxy/execute", json={"operationType": "ListLeagues", "payload": {}})
+
+        records = _parse_caplog(caplog.records)
+        outcome = next(r for r in records if r.get("event") == "outcome")
+        assert outcome["result"] == "success"
+        assert "totalLatencyMs" in outcome
+        assert isinstance(outcome["totalLatencyMs"], (int, float))
+
+    def test_outcome_error_contains_error_code_and_detail(self, client, caplog):
+        """Error outcome must include errorCode, detail, and totalLatencyMs."""
+        c, _ = client
+
+        with caplog.at_level(logging.INFO, logger="app.audit"):
+            c.post("/proxy/execute", json={"operationType": "BadOp", "payload": {}})
+
+        records = _parse_caplog(caplog.records)
+        outcome = next(r for r in records if r.get("event") == "outcome")
+        assert outcome["result"] == "error"
+        assert "errorCode" in outcome
+        assert "detail" in outcome
+        assert "totalLatencyMs" in outcome
